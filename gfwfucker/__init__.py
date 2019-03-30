@@ -15,7 +15,7 @@ BACKLOG = 128
 
 # protocol part
 SALT = b'FuckYouGFW'
-LEN = 4
+LEN  = 4
 
 # sender: client
 # usage: keep connection alive
@@ -100,7 +100,7 @@ class ClientHandler:
                 elif self.command == HANDSHAKE:
                     self.send(FAILURE, b'Cannot handshake twice')
                 elif self.command == CONNECT:
-                    self.connect()
+                    self.remote_connect()
                 elif self.command == LOGOUT:
                     self.close()
         except BreakException:
@@ -128,15 +128,25 @@ class ClientHandler:
                 self.quit()
             else:
                 self.send(FAILURE, b'Not logged in')
-    def connect(self):
+    def remote_connect(self):
         addr = inet_ntoa(self.data[:4])
         port = int.from_bytes(self.data[4:8], 4, 'big')
         srv = socket()
         try:
             srv.connect((addr, port))
+            self.srv_list[self.srv_latest_id] = srv
+            data = int.to_bytes(srv_latest_id, LEN, 'big')
+            self.send(SUCCESS, data)
+            srv_latest_id += 1
         except Exception as e:
             srv.send(FAILURE, repr(e))
-        self.srv_list[self.srv_latest_id] = srv
+    def remote_send(self):
+        srv_id = int.from_bytes(self.data[:4], 4, 'big')
+        srv = srv_list[srv_id]
+        try:
+            srv.send(self.data[4:)
+        except Exception as e:
+            self.send(FAILURE, repr(e))
     def send(self, command, data = None):
         self.cli.send(command)
         if isinstance(data, NoneType):
