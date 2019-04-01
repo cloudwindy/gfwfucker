@@ -14,7 +14,11 @@ __all__ = ['GFWFucker']
 BACKLOG = 128
 
 # protocol part
+
+# usage: salt in password's md5
 SALT = b'FuckYouGFW'
+
+# usage: max packet length's length
 LEN  = 4
 
 # sender: client
@@ -25,7 +29,7 @@ HEARTBEAT  = b'\x00'
 
 # sender: client
 # usage: log in the server
-# data: password's MD5
+# data: password's md5
 # response: SUCCESS or FAILURE
 HANDSHAKE  = b'\x01'
 
@@ -41,8 +45,8 @@ CONNECT    = b'\x02'
 # response: none
 SEND       = b'\x03'
 
-# sender: server
-# usage: forward messages from a connected server
+# sender: client
+# usage: get recieved messages from a connected server
 # data: given connection ID and messages
 # response: none
 RECV       = b'\x04'
@@ -65,6 +69,8 @@ QUIT       = b'\x06'
 SUCCESS    = b'\xfe'
 FAILURE    = b'\xff'
 
+class BreakException(Exception):
+    pass
 class GFWFucker:
     def __init__(self, addr, port, password):
         self.srv = socket()
@@ -76,15 +82,13 @@ class GFWFucker:
         self.srv.listen()
         pool = Pool(BACKLOG)
         while True:
-            cli = self.srv.accpet()
+            cli = self.srv.accept()
             cli_sock = cli[0]
             cli_addr = '%s:%d' % cli[1]
             pool.apply_async(target = ClientHandler(cli_sock, self.password))
         pool.close()
         pool.join()
 class ClientHandler:
-    class BreakException:
-        pass
     def __init__(self, cli, password):
         self.srv_lastest_id = 0
         self.srv_list = []
@@ -101,7 +105,11 @@ class ClientHandler:
                     self.send(FAILURE, b'Cannot handshake twice')
                 elif self.command == CONNECT:
                     self.remote_connect()
-                elif self.command == LOGOUT:
+                elif self.command == SEND:
+                    self.remote_send()
+                elif self.command == RECV:
+                    self.remote_recv()
+                elif self.command == QUIT:
                     self.close()
         except BreakException:
             pass
@@ -125,7 +133,7 @@ class ClientHandler:
             elif self.command == HEARTBEAT:
                 self.heartbeat()
             elif self.command == QUIT:
-                self.quit()
+                self.close()
             else:
                 self.send(FAILURE, b'Not logged in')
     def remote_connect(self):
@@ -134,19 +142,22 @@ class ClientHandler:
         srv = socket()
         try:
             srv.connect((addr, port))
-            self.srv_list[self.srv_latest_id] = srv
-            data = int.to_bytes(srv_latest_id, LEN, 'big')
+            self.srv_list[self.srv_lastest_id] = srv
+            data = int.to_bytes(self.srv_lastest_id, LEN, 'big')
             self.send(SUCCESS, data)
-            srv_latest_id += 1
+            self.srv_lastest_id += 1
         except Exception as e:
             srv.send(FAILURE, repr(e))
     def remote_send(self):
         srv_id = int.from_bytes(self.data[:4], 4, 'big')
-        srv = srv_list[srv_id]
+        srv = self.srv_list[srv_id]
         try:
-            srv.send(self.data[4:)
+            srv.send(self.data[4:])
         except Exception as e:
             self.send(FAILURE, repr(e))
+    def remote_recv(self):
+        srv_id = int.from_bytes(self.data[:4], 4, 'big')
+        srv = self.srv_list[srv_id]
     def send(self, command, data = None):
         self.cli.send(command)
         if isinstance(data, NoneType):
@@ -161,9 +172,22 @@ class ClientHandler:
         self.data = self.cli.recv(data_len)
     def close(self):
         self.send(QUIT)
-        for srv_id in srv_list:
-            srv = srv_list[srv_id]
+        for srv_id in self.srv_list:
+            srv = self.srv_list[srv_id]
             srv.close()
-            self.disconnect(srv_id)
+            #self.disconnect(srv_id)
         self.cli.close()
         raise BreakException()
+class RemoteServer:
+    def __init__(self, addr, port):
+        self.addr = addr
+        self.port = port
+        self.srv = socket()
+    def __call__(self):
+        self.connect()
+    def connect(self):
+        self.srv.connect((self.addr, self.port))
+    def send(self, msg):
+        return self.srv.send(msg)
+    def recv(self, len):
+        return self.srv.recv(len)
