@@ -69,6 +69,7 @@ QUIT       = b'\x06'
 SUCCESS    = b'\xfe'
 FAILURE    = b'\xff'
 
+# usage: break
 class BreakException(Exception):
     pass
 class GFWFucker:
@@ -88,10 +89,11 @@ class GFWFucker:
             pool.apply_async(target = ClientHandler(cli_sock, self.password))
         pool.close()
         pool.join()
+
+# usage: handle a client
 class ClientHandler:
     def __init__(self, cli, password):
-        self.srv_lastest_id = 0
-        self.srv_list = []
+        self.srv = RemoteServer()
         self.cli = cli
         self.password = password
     def __call__(self):
@@ -138,56 +140,54 @@ class ClientHandler:
                 self.send(FAILURE, b'Not logged in')
     def remote_connect(self):
         addr = inet_ntoa(self.data[:4])
-        port = int.from_bytes(self.data[4:8], 4, 'big')
-        srv = socket()
+        port = int2bytes(self.data[4:8])
         try:
-            srv.connect((addr, port))
-            self.srv_list[self.srv_lastest_id] = srv
-            data = int.to_bytes(self.srv_lastest_id, LEN, 'big')
-            self.send(SUCCESS, data)
-            self.srv_lastest_id += 1
+            srv_id = self.srv.new(addr, port)
         except Exception as e:
-            srv.send(FAILURE, repr(e))
+            self.cli.send(FAILURE, repr(e))
+        else:
+            self.send(SUCCESS, srv_id)
     def remote_send(self):
-        srv_id = int.from_bytes(self.data[:4], 4, 'big')
-        srv = self.srv_list[srv_id]
+        srv_id = int2bytes(self.data[:4])
         try:
             srv.send(self.data[4:])
         except Exception as e:
             self.send(FAILURE, repr(e))
     def remote_recv(self):
-        srv_id = int.from_bytes(self.data[:4], 4, 'big')
+        srv_id = int2bytes(self.data[:4])
         srv = self.srv_list[srv_id]
     def send(self, command, data = None):
         self.cli.send(command)
         if isinstance(data, NoneType):
-            self.cli.send(int.to_bytes(0, LEN, 'big'))
+            self.cli.send(int2bytes(0))
             return 0
         else:
-            self.cli.send(int.to_bytes(len(data), LEN, 'big'))
+            self.cli.send(int2bytes(len(data)))
             return self.cli.send(data)
     def recv(self):
         self.command = self.cli.recv(1)
-        data_len = int.from_bytes(self.cli.recv(LEN), LEN, 'big')
+        data_len = int2bytes(self.cli.recv(LEN))
         self.data = self.cli.recv(data_len)
     def close(self):
-        self.send(QUIT)
-        for srv_id in self.srv_list:
-            srv = self.srv_list[srv_id]
-            srv.close()
-            #self.disconnect(srv_id)
-        self.cli.close()
         raise BreakException()
+
+# usage: handle clients' connections with remote server
 class RemoteServer:
-    def __init__(self, addr, port):
-        self.addr = addr
-        self.port = port
-        self.srv = socket()
-    def __call__(self):
-        self.connect()
-    def connect(self):
-        self.srv.connect((self.addr, self.port))
-    def send(self, msg):
-        return self.srv.send(msg)
-    def recv(self, len):
-        return self.srv.recv(len)
+    def __init__(self):
+        self.srv_list = []
+    def new(self, addr, port):
+        self.srv_list += socket()
+        srv_id = len(self.srv_list) - 1
+        self.srv_list[srv_id].connect((addr, port))
+        return srv_id
+    def send(self, srv_id, msg):
+        return self.srv_list[srv_id].send(msg)
+    def recv(self, srv_id, len):
+        return self.srv_list[srv_id].recv(len)
+    def close(self, srv_id):
+        self.srv_list[srv_id].close()
+    def close_all(self):
+        for srv in self.srv_list:
+            srv.close()
+def int2bytes(num, len = 4):
+    return int.to_bytes(num, 4, 'big')
