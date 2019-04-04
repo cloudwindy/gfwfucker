@@ -72,6 +72,8 @@ FAILURE    = b'\xff'
 # usage: break
 class BreakException(Exception):
     pass
+
+# usage: main instance
 class GFWFucker:
     def __init__(self, addr, port, password):
         self.srv = socket()
@@ -80,26 +82,28 @@ class GFWFucker:
         md5_obj.update(password.encode())
         self.password = md5_obj.digest()
     def fuck(self):
+        # fuck when you want
         self.srv.listen()
         pool = Pool(BACKLOG)
         while True:
             cli = self.srv.accept()
             cli_sock = cli[0]
-            cli_addr = '%s:%d' % cli[1]
-            pool.apply_async(target = ClientHandler(cli_sock, self.password))
+            #cli_addr = '%s:%d' % cli[1]
+            pool.apply_async(ClientHandler(cli_sock, self.password))
         pool.close()
         pool.join()
 
 # usage: handle a client
 class ClientHandler:
     def __init__(self, cli, password):
-        self.srv = RemoteServer()
+        self.srv = RemoteHandler()
         self.cli = cli
         self.password = password
     def __call__(self):
         try:
             self.handshake()
             while True:
+                # mainloop
                 self.recv()
                 if self.command == HEARTBEAT:
                     self.heartbeat()
@@ -144,42 +148,36 @@ class ClientHandler:
         try:
             srv_id = self.srv.new(addr, port)
         except Exception as e:
-            self.cli.send(FAILURE, repr(e))
+            self.send(FAILURE, repr(e))
         else:
             self.send(SUCCESS, srv_id)
     def remote_send(self):
-        srv_id = int2bytes(self.data[:4])
         try:
-            srv.send(self.data[4:])
+            self.srv.send(self.data[4:])
         except Exception as e:
             self.send(FAILURE, repr(e))
     def remote_recv(self):
-        srv_id = int2bytes(self.data[:4])
-        srv = self.srv_list[srv_id]
-    def send(self, command, data = None):
+        self.srv.recv()
+    def send(self, command, data = ''):
         self.cli.send(command)
-        if isinstance(data, NoneType):
-            self.cli.send(int2bytes(0))
-            return 0
-        else:
-            self.cli.send(int2bytes(len(data)))
-            return self.cli.send(data)
+        self.cli.send(int2bytes(len(data)))
+        return self.cli.send(data)
     def recv(self):
         self.command = self.cli.recv(1)
-        data_len = int2bytes(self.cli.recv(LEN))
+        data_len = bytes2int(self.cli.recv(4))
         self.data = self.cli.recv(data_len)
     def close(self):
         raise BreakException()
 
 # usage: handle clients' connections with remote server
-class RemoteServer:
+class RemoteHandler:
     def __init__(self):
         self.srv_list = []
     def new(self, addr, port):
         self.srv_list += socket()
-        srv_id = len(self.srv_list) - 1
-        self.srv_list[srv_id].connect((addr, port))
-        return srv_id
+        self.srv_list[self.get_id()].connect((addr, port))
+    def get_id(self):
+        return len(self.srv_list) - 1
     def send(self, srv_id, msg):
         return self.srv_list[srv_id].send(msg)
     def recv(self, srv_id, len):
@@ -189,5 +187,8 @@ class RemoteServer:
     def close_all(self):
         for srv in self.srv_list:
             srv.close()
-def int2bytes(num, len = 4):
+# usage: change between int and bytes
+def int2bytes(num):
     return int.to_bytes(num, 4, 'big')
+def bytes2int(num):
+    return int.from_bytes(num, 4, 'big')
