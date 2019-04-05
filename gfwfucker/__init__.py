@@ -1,9 +1,10 @@
 """
 gfwfucker - A tool to bypass GFW!
 """
-from socket                import socket, inet_ntoa
-from hashlib               import md5
-from multiprocessing.dummy import Process, Pool
+from hashlib  import md5
+from asynchat import asyn_chat
+from asyncore import dispatcher, loop
+from logging  import basicConfig, getLogger, DEBUG, INFO, WARNING, ERROR, CRTITCAL
 
 __author__ = 'cloudwindy'
 __version__ = '1.0'
@@ -11,127 +12,134 @@ __version__ = '1.0'
 __all__ = ['GFWFucker']
 
 # ----- config -----
-# usage: number of client handler threads
-POOL_SIZE = 128
+
 # usage: size of each message from remote server
-BUFFER_SIZE = 2048
+BUFFER_SIZE = 4096
+# usage: size of reqest queue
+BACKLOG     = 16
 
 # ----- protocol -----
-# usage: salt in password's md5
-SALT = b'FuckYouGFW'
 
 # sender: client
 # usage: keep connection alive
 # data: none
 # response: HEARTBEAT
-HEARTBEAT  = b'\x00'
+HEARTBEAT   = b'\x00'
 
 # sender: client
 # usage: log in the server
 # data: password's md5
 # response: SUCCESS or FAILURE
-HANDSHAKE  = b'\x01'
+HANDSHAKE   = b'\x01'
 
 # sender: client
 # usage: connect a server
 # data: target IP and port
 # response: SUCCESS and connection ID(int, an ID for a connection) or FAILURE
-CONNECT    = b'\x02'
+CONNECT     = b'\x02'
 
 # sender: client
 # usage: send messages to a connected server
 # data: given connection ID and messages
 # response: SUCCESS or FAILURE
-SEND       = b'\x03'
+SEND        = b'\x03'
 
 # sender: server
 # usage: send recieved messages from a connected server
 # data: given connection ID and messages
 # response: SUCCESS or FAILURE
-FORWARD    = b'\x04'
+FORWARD     = b'\x04'
 
 # sender: client or server
 # usage: disconnect a connected server
 # data: given connection ID
 # response: DISCONNECT
-DISCONNECT = b'\x05'
+DISCONNECT  = b'\x05'
 
 # sender: client
 # usage: quit the server
 # data: none
 # response: QUIT
-QUIT       = b'\x06'
+QUIT        = b'\x06'
 
 # sender: client or server
 # usage: opeartion succeeded or failed
 # data: (optional)str, reaseon
-SUCCESS    = b'\xfe'
-FAILURE    = b'\xff'
+SUCCESS     = b'\xfe'
+FAILURE     = b'\xff'
 
 # ----- code ------
-# usage: main instance
-class GFWFucker:
+
+# usage: main 
+def main(addr, port, password):
+    GFWFucker('0.0.0.0', 8964, 'FuckYouGFW')
+    loop()
+
+class GFWFucker(dispatcher):
     def __init__(self, addr, port, password):
-        srv = socket()
-        srv.bind((addr, port))
-        self.srv = srv
-        md5_obj = md5(SALT)
+        dispatcher.__init__(self)
+        md5_obj = md5()
         md5_obj.update(password.encode())
         self.password = md5_obj.digest()
-    def fuckIt(self):
-        self.srv.listen()
-        pool = Pool(POOL_SIZE)
-        while True:
-            cli = self.srv.accept()
-            cli_sock = cli[0]
-            #cli_addr = '%s:%d' % cli[1]
-            pool.apply_async(ClientHandler(cli_sock, self.password))
-        pool.close()
-        pool.join()
+        self.create_socket()
+        self.set_reuse_addr()
+        self.bind((addr, port))
+        self.listen(BACKLOG)
+    def handle_accept(self):
+        (conn, addr) = self.accept()
+        ClientHandler(conn, self.password)
+    def handle_close(self):
+        self.close()
 
 # usage: handle a client
-class ClientHandler:
+class ClientHandler(dispatcher):
     def __init__(self, cli, password):
+        dispatcher.__init__(self, cli)
         self.cli = cli
         self.srv = RemoteHandler(self)
         self.password = password
-    def __call__(self):
-        try:
-            self.handshake()
-            while True:
-                # mainloop
-                self.recv()
-                if self.command == HEARTBEAT:
-                    self.heartbeat()
-                elif self.command == HANDSHAKE:
-                    self.send(FAILURE, b'Cannot handshake twice')
-                elif self.command == CONNECT:
-                    self.remote_connect()
-                elif self.command == SEND:
-                    self.remote_send()
-                elif self.command == QUIT:
-                    self.close()
-                else:
-                    self.send(FAILURE, b'Unknown command')
-        except BreakException:
-            pass
-        except Exception as e:
-            print(repr(e))
-            try:
-                self.close()
-            except BreakException:
-                pass
+        self.buf = bytes()
+    def readable(self):
+        return True
+    def writable(self):
+        return len(self.buf) > 0
+    def send_pack(self, command, data = b''):
+        self.buf += command
+        self.buf += int2bytes(len(data)))
+        self.buf += data
+    def recv_pack(self):
+        self.command = self.cli.recv(1)
+        data_len = bytes2int(self.cli.recv(4))
+        self.data = self.cli.recv(data_len)
+    def handle_connect(self):
+        pass
+    def handle_read(self):
+        
+        if self.command == HEARTBEAT:
+            self.heartbeat()
+        elif self.command == HANDSHAKE:
+            self.send_pack(FAILURE, b'Cannot handshake twice')
+        elif self.command == CONNECT:
+            self.remote_connect()
+        elif self.command == SEND:
+            self.remote_send()
+        elif self.command == QUIT:
+            self.close()
+        else:
+            self.send_pack(FAILURE, b'Unknown command')
+    def handle_write(self):
+        self.sendall(self.buf)
     def heartbeat(self):
-        self.send(HEARTBEAT)
+        self.send_pack(HEARTBEAT)
     def handshake(self):
         while True:
             self.recv()
             if self.command == HANDSHAKE:
                 if self.data == self.password:
-                    self.send(SUCCESS)
+                    self.send_pack(SUCCESS)
                     break
                 else:
-                    self.send(FAILURE, b'Authentication failure')
+                    self.send_pack(FAILURE, b'Authentication failure')
             elif self.command == HEARTBEAT:
                 self.heartbeat()
             elif self.command == QUIT:
@@ -154,48 +162,40 @@ class ClientHandler:
             self.srv.send(srv_id, self.data[4:])
         except Exception as e:
             self.send(FAILURE, repr(e))
-    def send(self, command, data = ''):
-        self.cli.send(command)
-        self.cli.send(int2bytes(len(data)))
-        return self.cli.send(data)
-    def recv(self):
-        self.command = self.cli.recv(1)
-        data_len = bytes2int(self.cli.recv(4))
-        self.data = self.cli.recv(data_len)
-    def close(self):
-        self.send()
+    def handle_close(self):
+        self.send(QUIT, b'Server disconnected')
+        self.srv.close()
         self.cli.close()
         raise BreakException()
 
-# usage: handle clients' connections with remote server
-class RemoteHandler:
-    def __init__(self, cli_handler):
-        self.cli = cli_handler
+# usage: handle remote connection handlers
+class RemoteHandlerList:
+    def __init__(self, cli):
         self.srv_list = []
-        self.pool = Pool(POOL_SIZE)
     def get_id(self):
-        # warning: get_id() mustn't be called after new()
         return len(self.srv_list)
-    def new(self, addr, port):
-        srv = socket()
-        srv.setblocking(False)
-        srv.connect((addr, port))
-        self.srv_list += srv
-    def send(self, srv_id, msg):
-        self.srv_list[srv_id].send(msg)
-    def _handle(self, srv_id):
-        try:
-            while True:
-                msg = self.srv_list[srv_id].recv()
-                self.cli.send(FORWARD, msg)
-        except Exception as e:
-            print(repr(e))
-    def disconnect(self, srv_id):
-        self.srv_list[srv_id].close()
-    def close(self):
-        for srv in self.srv_list:
-            srv.close()
-        self.pool.close()
+    def new(self, )
+# usage: handle client's sigle connection with remote server
+class RemoteHandler(dispatcher):
+    def __init__(self, addr, port, forwarder):
+        dispatcher.__init__(self)
+        self.create_socket()
+        self.
+        self.forward = forwarder
+        self.buf = bytes()
+    def readable(self):
+        return True
+    def writable(self):
+        return len(self.buf) > 0
+    def handle_connect(self):
+        self.connect((self.addr, self.port))
+    def handle_send(self):
+        self.sendall(self.buf)
+    def handle_read(self):
+        buf = self.recv(BUFFER_SIZE)
+        self.forward(buf)
+    def handle_close(self):
+        self.close()
 
 # usage: change between int and bytes
 def int2bytes(num):
