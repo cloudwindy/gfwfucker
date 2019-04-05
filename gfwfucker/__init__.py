@@ -78,8 +78,7 @@ class GFWFucker:
         md5_obj = md5(SALT)
         md5_obj.update(password.encode())
         self.password = md5_obj.digest()
-    def fuck(self):
-        # fuck when you want
+    def fuckIt(self):
         self.srv.listen()
         pool = Pool(POOL_SIZE)
         while True:
@@ -138,7 +137,7 @@ class ClientHandler:
             elif self.command == QUIT:
                 self.close()
             else:
-                self.send(FAILURE, b'Not logged in')
+                self.send(FAILURE, b'Unknown command(not logged in)')
     def remote_connect(self):
         addr = inet_ntoa(self.data[:4])
         port = bytes2int(self.data[4:8])
@@ -164,6 +163,8 @@ class ClientHandler:
         data_len = bytes2int(self.cli.recv(4))
         self.data = self.cli.recv(data_len)
     def close(self):
+        self.send()
+        self.cli.close()
         raise BreakException()
 
 # usage: handle clients' connections with remote server
@@ -171,6 +172,7 @@ class RemoteHandler:
     def __init__(self, cli_handler):
         self.cli = cli_handler
         self.srv_list = []
+        self.pool = Pool(POOL_SIZE)
     def get_id(self):
         # warning: get_id() mustn't be called after new()
         return len(self.srv_list)
@@ -181,14 +183,19 @@ class RemoteHandler:
         self.srv_list += srv
     def send(self, srv_id, msg):
         self.srv_list[srv_id].send(msg)
-    def handle(self, srv_id):
-        msg = self.srv_list[srv_id].recv()
-        self.cli.send(FORWARD, msg)
-    def close(self, srv_id):
+    def _handle(self, srv_id):
+        try:
+            while True:
+                msg = self.srv_list[srv_id].recv()
+                self.cli.send(FORWARD, msg)
+        except Exception as e:
+            print(repr(e))
+    def disconnect(self, srv_id):
         self.srv_list[srv_id].close()
-    def close_all(self):
+    def close(self):
         for srv in self.srv_list:
             srv.close()
+        self.pool.close()
 
 # usage: change between int and bytes
 def int2bytes(num):
