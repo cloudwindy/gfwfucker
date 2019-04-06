@@ -14,9 +14,11 @@ __all__ = ['GFWFuckerServer', 'GFWFuckerClient']
 # ----- config -----
 
 # usage: running test
-TEST_SERVER   = '127.0.0.1'
-TEST_PORT     = 8964
-TEST_PASSWORD = 'FuckYouGFW'
+TEST_SERVER      = '127.0.0.1'
+TEST_PORT        = 8964
+TEST_PASSWORD    = 'FuckYouGFW'
+TEST_HTTP_SERVER = '127.0.0.1'
+TEST_HTTP_PORT   = 1080
 # usage: size of each message from remote server
 BUFFER_SIZE   = 4096
 # usage: size of reqest queue
@@ -76,163 +78,17 @@ FAILURE       = b'\xff'
 
 # usage: only for test
 def main():
+    GFWFuckerHTTPLocal(TEST_HTTP_SERVER, TEST_HTTP_PORT)
     GFWFuckerServer(TEST_SERVER, TEST_PORT, TEST_PASSWORD)
     GFWFuckerClient(TEST_SERVER, TEST_PORT, TEST_PASSWORD)
     loop()
 
 # ----- explanation -----
 
-# internet explorer -> GFWFuckerClient -> GFWFuckerServer -> www.google.com 
-#                   ^ plain            ^ encrypted        ^ plain
-#         ^                   ^                 ^                  ^
-#       local       ->      client     ->     server      ->     remote
-#  show ip: remote      (transparent)      (transparent)     show ip: server
-
-# ----- client -----
-
-class GFWFuckerClient(BaseHandler):
-    """
-    local -> client -> server -> remote
-                    ^ connect handler
-    """
-    def __init__(self, addr, port, password):
-        BaseHandler.__init__(self, addr, port)
-        self.is_verified = False
-        self.send_pack(HANDSHAKE, str2md5(password))
-        self.recv_pack()
-        if send.command == FAILURE:
-            self.c('Handshake failed! Reason: ' + self.data.encode())
-    def handle_read(self):
-        self.recv_pack()
-        
-    def forward(self):
-class ForwardHandler(BaseHandler):
-    """
-    local -> client -> server -> remote
-          ^ forward handler
-    """
-    def __init__(self, cli):
-        pass
-
-# ----- server -----
-
-class GFWFuckerServer(dispatcher):
-    """
-    local -> client -> server -> remote
-                    ^ accept handler
-    """
-    def __init__(self, addr, port, password):
-        dispatcher.__init__(self)
-        self.password = str2md5(password)
-        self.create_socket()
-        self.set_reuse_addr()
-        self.bind((addr, port))
-        self.listen(BACKLOG)
-        self.log = getLogger('MainServer')
-    def handle_accept(self):
-        (conn, addr) = self.accept()
-        self.log.info('Accept a connection from %s:%d' % addr)
-        ClientHandler(conn, self.password)
-    def handle_close(self):
-        self.close()
-
-class ClientHandler(BaseHandler):
-    """
-    local -> client -> server -> remote
-                    ^ request handler
-    """
-    def __init__(self, cli, password):
-        BaseHandler.__init__(self, cli)
-        self.srv = RemoteHandlerList(self.remote_forward)
-        self.password = password
-        self.verified = False
-    def handle_read(self):
-        if not self.verified:
-            self.handshake()
-        else:
-            self.recv_pack()
-            if self.command == HEARTBEAT:
-                self.heartbeat()
-            elif self.command == CONNECT:
-                self.remote_connect()
-            elif self.command == SEND:
-                self.remote_send()
-            elif self.command == QUIT:
-                self.close()
-            else:
-                self.send_pack(FAILURE, b'Unknown command')
-    def heartbeat(self):
-        self.send_pack(HEARTBEAT)
-    def handshake(self):
-        self.recv_pack()
-        if self.command == HANDSHAKE:
-            if self.data == self.password:
-                self.send_pack(SUCCESS)
-                self.verified = True
-            else:
-                send_pack(FAILURE, b'Authentication failure (%s != %s)' % (self.data, self.password))
-        elif self.command == HEARTBEAT:
-            self.heartbeat()
-        elif self.command == QUIT:
-            self.close()
-        else:
-            self.send_pack(FAILURE, b'Unknown command(not logged in)')
-    def remote_connect(self):
-        addr = inet_ntoa(self.data[:4])
-        port = bytes2int(self.data[4:8])
-        srv_id = 0
-        try:
-            srv_id = self.srv.get_id()
-            self.srv.new(addr, port)
-        except Exception as e:
-            self.send_pack(FAILURE, repr(e))
-        else:
-            self.send_pack(SUCCESS, srv_id)
-    def remote_send(self):
-        srv_id = bytes2int(self.data[:4])
-        try:
-            self.srv.send(srv_id, self.data[4:])
-        except Exception as e:
-            self.send_pack(FAILURE, repr(e))
-    def remote_forward(self, msg):
-        self.send_pack(FORWARD, msg)
-    def handle_close(self):
-        self.send_pack(QUIT, b'Server disconnected')
-        self.srv.close_all()
-        self.close()
-
-class RemoteHandlerList:
-    """
-    local -> client -> server -> remote
-                              ^ remote handler list
-    """
-    def __init__(self, forwarder):
-        self.forwarder = forwarder
-        self.srv_list = []
-    def get_id(self):
-        return len(self.srv_list)
-    def new(self, addr, port):
-        self.srv_list[self.get_id()] = RemoteHandler(addr, port, self.forwarder)
-    def send(self, srv_id, msg):
-        self.srv_list[srv_id].send_msg(msg)
-    def close(self, srv_id):
-        self.srv_list[srv_id].close()
-    def close_all(self):
-        for srv in self.srv_list:
-            srv.close()
-
-class RemoteHandler(BaseHandler):
-    """
-    local -> client -> server -> remote
-                              ^ remote handler
-    """
-    def __init__(self, addr, port, forwarder):
-        BaseHandler.__init__(self, addr, port)
-        self.forward = forwarder
-    def handle_read(self):
-        self.recv_msg(BUFFER_SIZE)
-        self.forward(self.recv_buf)
-
+# browser - GFWFuckerClient - GFWFuckerServer - www.google.com 
+#    ^             ^                ^                 ^
+#  local  -      client     -     server      -     remote
+#         ^ raw             ^ encrypted       ^ raw
 
 # ----- base -----
 
@@ -247,7 +103,7 @@ class BaseHandler(dispatcher):
         else:
             dispatcher.__init__(self)
             self.create_socket()
-            self.connect((conn_addr[0], conn_addr[1]))
+            self.connect((conn_or_addr[0], conn_or_addr[1]))
             self.send_buf = bytes()
             self.recv_buf = bytes()
         self.log = getLogger(self.__class__.__name__)
@@ -330,3 +186,161 @@ def str2md5(s):
     md5_obj = md5()
     md5_obj.update(s.encode())
     return md5_obj.digest()
+# ----- client -----
+
+class GFWFuckerHTTPLocal(dispatcher):
+    """
+    local - client - server - remote
+          ^ HTTP local handler
+    """
+    def __init__(self, addr, port):
+        dispatcher.__init__(self)
+class GFWFuckerSOCKSLocal(dispatcher):
+    """
+    local - client - server - remote
+          ^ SOCKS local handler
+    """
+    def __init__(self, addr, port):
+        dispatcher.__init__(self)
+class GFWFuckerClient(BaseHandler):
+    """
+    local - client - server - remote
+                   ^ connect handler
+    """
+    def __init__(self, addr, port, password):
+        BaseHandler.__init__(self, (addr, port))
+        self.is_verified = False
+        self.send_pack(HANDSHAKE, str2md5(password))
+        self.recv_pack()
+        if self.command == FAILURE:
+            self.c('Handshake failed! Reason: ' + self.data.encode())
+    def handle_read(self):
+        self.recv_pack()
+        
+    def forward(self):
+        pass
+
+# ----- server -----
+
+class GFWFuckerServer(dispatcher):
+    """
+    local - client - server - remote
+                   ^ accept handler(server)
+    """
+    def __init__(self, addr, port, password):
+        dispatcher.__init__(self)
+        self.password = str2md5(password)
+        self.create_socket()
+        self.set_reuse_addr()
+        self.bind((addr, port))
+        self.listen(BACKLOG)
+        self.log = getLogger('MainServer')
+    def handle_accept(self):
+        (conn, addr) = self.accept()
+        self.log.info('Accept a connection from %s:%d' % addr)
+        ClientHandler(conn, self.password)
+    def handle_close(self):
+        self.close()
+
+class ClientHandler(BaseHandler):
+    """
+    local - client - server - remote
+                   ^ client handler
+    """
+    def __init__(self, cli, password):
+        BaseHandler.__init__(self, cli)
+        self.srv = RemoteHandlerList(self.remote_forward)
+        self.password = password
+        self.verified = False
+    def handle_read(self):
+        if not self.verified:
+            self.handshake()
+        else:
+            self.recv_pack()
+            if self.command == HEARTBEAT:
+                self.heartbeat()
+            elif self.command == CONNECT:
+                self.remote_connect()
+            elif self.command == SEND:
+                self.remote_send()
+            elif self.command == QUIT:
+                self.close()
+            elif self.command == SUCCESS:
+                pass
+            elif self.command == FAILURE:
+                self.e(self.data.encode())
+            else:
+                self.send_pack(FAILURE, b'Unknown command')
+    def heartbeat(self):
+        self.send_pack(HEARTBEAT)
+    def handshake(self):
+        self.recv_pack()
+        if self.command == HANDSHAKE:
+            if self.data == self.password:
+                self.send_pack(SUCCESS)
+                self.verified = True
+            else:
+                self.send_pack(FAILURE, b'Authentication failure (%s != %s)' % (self.data, self.password))
+        elif self.command == HEARTBEAT:
+            self.heartbeat()
+        elif self.command == QUIT:
+            self.close()
+        else:
+            self.send_pack(FAILURE, b'Unknown command(not logged in)')
+    def remote_connect(self):
+        addr = inet_ntoa(self.data[:4])
+        port = bytes2int(self.data[4:8])
+        srv_id = 0
+        try:
+            srv_id = self.srv.get_id()
+            self.srv.new(addr, port)
+        except Exception as e:
+            self.send_pack(FAILURE, repr(e))
+        else:
+            self.send_pack(SUCCESS, srv_id)
+    def remote_send(self):
+        srv_id = bytes2int(self.data[:4])
+        try:
+            self.srv.send(srv_id, self.data[4:])
+        except Exception as e:
+            self.send_pack(FAILURE, repr(e))
+    def remote_forward(self, msg):
+        self.send_pack(FORWARD, msg)
+    def handle_close(self):
+        self.send_pack(QUIT, b'Server disconnected')
+        self.srv.close_all()
+        self.close()
+
+class RemoteHandlerList:
+    """
+    local - client - server - remote
+                            ^ remote handler list
+    """
+    def __init__(self, forwarder):
+        self.forwarder = forwarder
+        self.srv_list = []
+    def get_id(self):
+        return len(self.srv_list)
+    def new(self, addr, port):
+        self.srv_list[self.get_id()] = RemoteHandler(addr, port, self.forwarder)
+    def send(self, srv_id, msg):
+        self.srv_list[srv_id].send_msg(msg)
+    def close(self, srv_id):
+        self.srv_list[srv_id].close()
+    def close_all(self):
+        for srv in self.srv_list:
+            srv.close()
+
+class RemoteHandler(BaseHandler):
+    """
+    local - client - server - remote
+                            ^ remote handler
+    """
+    def __init__(self, addr, port, forwarder):
+        BaseHandler.__init__(self, (addr, port))
+        self.forward = forwarder
+    def handle_read(self):
+        self.recv_msg(BUFFER_SIZE)
+        self.forward(self.recv_buf)
+
+
