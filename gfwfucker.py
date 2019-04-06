@@ -1,10 +1,11 @@
 """
 gfwfucker - A tool to bypass GFW!
 """
-from socket   import inet_ntoa
+from socket   import socket, inet_ntoa
 from hashlib  import md5
 from logging  import basicConfig, getLogger, DEBUG, INFO
-from asyncore import dispatcher, loop
+from asyncio  import run, open_connection, start_server
+#from asyncore import dispatcher, loop
 
 __author__ = 'cloudwindy'
 __version__ = '1.0'
@@ -78,10 +79,9 @@ FAILURE       = b'\xff'
 
 # usage: only for test
 def main():
-    GFWFuckerHTTPLocal(TEST_HTTP_SERVER, TEST_HTTP_PORT)
     GFWFuckerServer(TEST_SERVER, TEST_PORT, TEST_PASSWORD)
-    GFWFuckerClient(TEST_SERVER, TEST_PORT, TEST_PASSWORD)
-    loop()
+    #GFWFuckerHTTPLocal(TEST_HTTP_SERVER, TEST_HTTP_PORT)
+    #GFWFuckerClient(TEST_SERVER, TEST_PORT, TEST_PASSWORD)
 
 # ----- explanation -----
 
@@ -92,20 +92,18 @@ def main():
 
 # ----- base -----
 
-class BaseHandler(dispatcher):
+class BaseHandler:
     """
     one point -> another point
               ^ base handler
     """
     def __init__(self, conn_or_addr):
-        if isinstance(conn_or_addr, dispatcher):
+        if isinstance(conn_or_addr, socket):
             dispatcher.__init__(self, conn_or_addr)
-        else:
+        elif isinstance(conn_or_addr, tuple):
             dispatcher.__init__(self)
             self.create_socket()
             self.connect((conn_or_addr[0], conn_or_addr[1]))
-            self.send_buf = bytes()
-            self.recv_buf = bytes()
         self.log = getLogger(self.__class__.__name__)
     # ----- override dispatcher -----
     def readable(self):
@@ -118,26 +116,29 @@ class BaseHandler(dispatcher):
         num = self.send(self.send_buf)
         self.send_buf = self.send_buf[num:]
     def handle_read(self):
-        self.recv_msg(BUFFER_SIZE)
+        self.recv_raw(BUFFER_SIZE)
     def handle_close(self):
         self.close()
     # ----- network traffic -----
-    def send_msg(self, msg):
+    def send_raw(self, msg):
         """
         A -> B
-          ^ plain messages
+          ^ raw
         """
-        self.send_buf += msg
-    def recv_msg(self, len):
+        self.send(msg)
+    def recv_raw(self, len):
         """
         A <- B
-           ^ plain messages
+           ^ raw
         """
-        self.recv_buf += self.recv(len)
+        try:
+            self.recv_buf += self.recv(BUFFER_SIZE)
+        except BlockingIOError:
+            pass
     def send_pack(self, command, data = b''):
         """
         A -> B
-          ^ packed messages
+          ^ packed
         """
         self.send_buf += command
         self.send_buf += int2bytes(len(data))
@@ -145,11 +146,14 @@ class BaseHandler(dispatcher):
     def recv_pack(self):
         """
         A <- B
-           ^ packed messages
+           ^ packed
         """
-        self.command = self.recv(1)
-        data_len = bytes2int(self.recv(4))
-        self.data = self.recv(data_len)
+        try:
+            self.command = self.recv(1)
+            data_len = bytes2int(self.recv(4))
+            self.data = self.recv(data_len)
+        except BlockingIOError:
+            pass
     # ----- log -----
     def d(self, msg):
         self.log.debug(msg)
@@ -222,25 +226,17 @@ class GFWFuckerClient(BaseHandler):
 
 # ----- server -----
 
-class GFWFuckerServer(dispatcher):
+class GFWFuckerServer:
     """
     local - client - server - remote
                    ^ accept handler(server)
     """
-    def __init__(self, addr, port, password):
-        dispatcher.__init__(self)
+    def __init__(self, host, port, password):
+        start_server(self.accept, host, port)
         self.password = str2md5(password)
-        self.create_socket()
-        self.set_reuse_addr()
-        self.bind((addr, port))
-        self.listen(BACKLOG)
         self.log = getLogger('MainServer')
-    def handle_accept(self):
-        (conn, addr) = self.accept()
-        self.log.info('Accept a connection from %s:%d' % addr)
+    def accept(self, reader, writer):
         ClientHandler(conn, self.password)
-    def handle_close(self):
-        self.close()
 
 class ClientHandler(BaseHandler):
     """
@@ -324,7 +320,7 @@ class RemoteHandlerList:
     def new(self, addr, port):
         self.srv_list[self.get_id()] = RemoteHandler(addr, port, self.forwarder)
     def send(self, srv_id, msg):
-        self.srv_list[srv_id].send_msg(msg)
+        self.srv_list[srv_id].send_raw(msg)
     def close(self, srv_id):
         self.srv_list[srv_id].close()
     def close_all(self):
@@ -340,7 +336,8 @@ class RemoteHandler(BaseHandler):
         BaseHandler.__init__(self, (addr, port))
         self.forward = forwarder
     def handle_read(self):
-        self.recv_msg(BUFFER_SIZE)
+        self.recv_raw(BUFFER_SIZE)
         self.forward(self.recv_buf)
 
-
+if __name__ == '__main__':
+    main()
