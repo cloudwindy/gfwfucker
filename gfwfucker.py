@@ -4,7 +4,7 @@ gfwfucker - A tool to bypass GFW!
 from socket   import socket, inet_ntoa
 from hashlib  import md5
 from logging  import basicConfig, getLogger, DEBUG, INFO
-from asyncio  import run, open_connection, start_server
+from asyncio  import run, open_connection, start_server, IncompleteReadError
 #from asyncore import dispatcher, loop
 
 __author__ = 'cloudwindy'
@@ -97,63 +97,39 @@ class BaseHandler:
     one point -> another point
               ^ base handler
     """
-    def __init__(self, conn_or_addr):
-        if isinstance(conn_or_addr, socket):
-            dispatcher.__init__(self, conn_or_addr)
-        elif isinstance(conn_or_addr, tuple):
-            dispatcher.__init__(self)
-            self.create_socket()
-            self.connect((conn_or_addr[0], conn_or_addr[1]))
+    def __init__(self, reader, writer):
+        self.reader = reader
+        self.writer = writer
         self.log = getLogger(self.__class__.__name__)
-    # ----- override dispatcher -----
-    def readable(self):
-        return True
-    def writable(self):
-        return len(self.send_buf) > 0
-    def handle_connect(self):
-        pass
-    def handle_send(self):
-        num = self.send(self.send_buf)
-        self.send_buf = self.send_buf[num:]
-    def handle_read(self):
-        self.recv_raw(BUFFER_SIZE)
-    def handle_close(self):
-        self.close()
     # ----- network traffic -----
-    def send_raw(self, msg):
+    async def send_raw(self, data):
         """
         A -> B
-          ^ raw
+          ^ raw data
         """
-        self.send(msg)
-    def recv_raw(self, len):
+        await self.writer.awrite(data)
+    async def recv_raw(self, len):
         """
         A <- B
            ^ raw
         """
-        try:
-            self.recv_buf += self.recv(BUFFER_SIZE)
-        except BlockingIOError:
-            pass
-    def send_pack(self, command, data = b''):
+        return await self.reader.read(BUFFER_SIZE)
+    async def send_pack(self, command, data = b''):
         """
         A -> B
           ^ packed
         """
-        self.send_buf += command
-        self.send_buf += int2bytes(len(data))
-        self.send_buf += data
-    def recv_pack(self):
+        await self.writer.awrite(command)
+        await self.writer.awrite(int2bytes(len(data)))
+        await self.writer.awrite(data)
+    async def recv_pack(self):
         """
         A <- B
            ^ packed
         """
-        try:
-            self.command = self.recv(1)
-            data_len = bytes2int(self.recv(4))
-            self.data = self.recv(data_len)
-        except BlockingIOError:
-            pass
+        self.command = await self.reader.readexactly(1)
+        data_len = bytes2int(await self.reader.readexactly(4))
+        self.data = await self.reader.readexactly(data_len)
     # ----- log -----
     def d(self, msg):
         self.log.debug(msg)
@@ -190,75 +166,42 @@ def str2md5(s):
     md5_obj = md5()
     md5_obj.update(s.encode())
     return md5_obj.digest()
-# ----- client -----
-
-class GFWFuckerHTTPLocal(dispatcher):
-    """
-    local - client - server - remote
-          ^ HTTP local handler
-    """
-    def __init__(self, addr, port):
-        dispatcher.__init__(self)
-class GFWFuckerSOCKSLocal(dispatcher):
-    """
-    local - client - server - remote
-          ^ SOCKS local handler
-    """
-    def __init__(self, addr, port):
-        dispatcher.__init__(self)
-class GFWFuckerClient(BaseHandler):
-    """
-    local - client - server - remote
-                   ^ connect handler
-    """
-    def __init__(self, addr, port, password):
-        BaseHandler.__init__(self, (addr, port))
-        self.is_verified = False
-        self.send_pack(HANDSHAKE, str2md5(password))
-        self.recv_pack()
-        if self.command == FAILURE:
-            self.c('Handshake failed! Reason: ' + self.data.encode())
-    def handle_read(self):
-        self.recv_pack()
-        
-    def forward(self):
-        pass
 
 # ----- server -----
 
-class GFWFuckerServer:
+async def GFWFuckerServer(self, host, port, password):
     """
     local - client - server - remote
-                   ^ accept handler(server)
+                       ^ i'm a server
     """
-    def __init__(self, host, port, password):
-        start_server(self.accept, host, port)
-        self.password = str2md5(password)
-        self.log = getLogger('MainServer')
-    def accept(self, reader, writer):
-        ClientHandler(conn, self.password)
+    password = str2md5(password)
+    async with await start_server(ClientHandler(password), host, port) as srv:
+        await srv.serve_forever()
 
 class ClientHandler(BaseHandler):
     """
     local - client - server - remote
                    ^ client handler
     """
-    def __init__(self, cli, password):
-        BaseHandler.__init__(self, cli)
-        self.srv = RemoteHandlerList(self.remote_forward)
+    def __init__(self, password):
         self.password = password
+    async def __call__(self, reader, writer):
+        BaseHandler.__init__(self, reader, writer)
+        self.srv = RemoteHandlerList(self.remote_forward)
         self.verified = False
-    def handle_read(self):
+        self.handshake()
+        while True
+    async def handle_read(self):
         if not self.verified:
-            self.handshake()
+            await self.handshake()
         else:
-            self.recv_pack()
+            await self.recv_pack()
             if self.command == HEARTBEAT:
                 self.heartbeat()
             elif self.command == CONNECT:
                 self.remote_connect()
             elif self.command == SEND:
-                self.remote_send()
+                await self.remote_send()
             elif self.command == QUIT:
                 self.close()
             elif self.command == SUCCESS:
@@ -266,24 +209,24 @@ class ClientHandler(BaseHandler):
             elif self.command == FAILURE:
                 self.e(self.data.encode())
             else:
-                self.send_pack(FAILURE, b'Unknown command')
-    def heartbeat(self):
-        self.send_pack(HEARTBEAT)
-    def handshake(self):
-        self.recv_pack()
+                await self.send_pack(FAILURE, b'Unknown command')
+    async def heartbeat(self):
+        await self.send_pack(HEARTBEAT)
+    async def handshake(self):
+        await self.recv_pack()
         if self.command == HANDSHAKE:
             if self.data == self.password:
-                self.send_pack(SUCCESS)
+                await self.send_pack(SUCCESS)
                 self.verified = True
             else:
-                self.send_pack(FAILURE, b'Authentication failure (%s != %s)' % (self.data, self.password))
+                await self.send_pack(FAILURE, b'Authentication failure (%s != %s)' % (self.data, self.password))
         elif self.command == HEARTBEAT:
-            self.heartbeat()
+            await self.heartbeat()
         elif self.command == QUIT:
-            self.close()
+            self.writer.close()
         else:
             self.send_pack(FAILURE, b'Unknown command(not logged in)')
-    def remote_connect(self):
+    async def remote_connect(self):
         addr = inet_ntoa(self.data[:4])
         port = bytes2int(self.data[4:8])
         srv_id = 0
@@ -338,6 +281,40 @@ class RemoteHandler(BaseHandler):
     def handle_read(self):
         self.recv_raw(BUFFER_SIZE)
         self.forward(self.recv_buf)
+
+# ----- client -----
+
+class GFWFuckerHTTPLocal:
+    """
+    local - client - server - remote
+          ^ HTTP local handler
+    """
+    def __init__(self, addr, port):
+        dispatcher.__init__(self)
+class GFWFuckerSOCKSLocal(dispatcher):
+    """
+    local - client - server - remote
+          ^ SOCKS local handler
+    """
+    def __init__(self, addr, port):
+        dispatcher.__init__(self)
+class GFWFuckerClient(BaseHandler):
+    """
+    local - client - server - remote
+                   ^ connect handler
+    """
+    def __init__(self, addr, port, password):
+        BaseHandler.__init__(self, (addr, port))
+        self.is_verified = False
+        self.send_pack(HANDSHAKE, str2md5(password))
+        self.recv_pack()
+        if self.command == FAILURE:
+            self.c('Handshake failed! Reason: ' + self.data.encode())
+    def handle_read(self):
+        self.recv_pack()
+        
+    def forward(self):
+        pass
 
 if __name__ == '__main__':
     main()
