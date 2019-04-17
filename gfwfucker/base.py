@@ -1,7 +1,7 @@
 from gfwfucker.tools import enc, dec
 from gfwfucker.config import EVENT_TIME
-from asyncio  import open_connection, sleep
-from logging  import getLogger
+from asyncio import open_connection, sleep
+from logging import getLogger
 
 __all__ = ['BaseHandler', 'BaseForwarder', 'BaseLogger']
 

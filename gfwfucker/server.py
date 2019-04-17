@@ -2,7 +2,7 @@ from gfwfucker.base import BaseHandler, BaseForwarder, BaseLogger
 from gfwfucker.protocol import *
 from gfwfucker.tools import enc, dec, md5
 from socket import inet_ntoa
-from asyncio  import open_connection, start_server, IncompleteReadError
+from asyncio import open_connection, start_server, IncompleteReadError
 
 __all__ = ['GFWFuckerServer']
 
@@ -32,11 +32,8 @@ class ClientHandler(BaseHandler, BaseForwarder, BaseLogger):
         BaseForwarder.__init__(self, self._forward)
         BaseLogger.__init__(self)
     async def __call__(self, password):
-        try:
-            await self._handshake(password)
-            await self._serve()
-        except IncompleteReadError:
-            self.w('Client exited unexceptedly')
+        await self._handshake(password)
+        await self._serve()
     async def _handshake(self, password):
         while True:
             await self.recv_pack()
@@ -95,4 +92,5 @@ class ClientHandler(BaseHandler, BaseForwarder, BaseLogger):
         await self.send_pack(FORWARD, data)
     async def _close(self):
         await self.send_pack(QUIT, b'Server disconnected')
+        self.i('Client disconnected')
         await self.close()

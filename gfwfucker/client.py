@@ -1,7 +1,7 @@
-from gfwfucker.base import BaseHandler, BaseForwarder
+from gfwfucker.base import BaseHandler, BaseForwarder, BaseLogger
 from gfwfucker.protocol import HANDSHAKE, FAILURE
 from gfwfucker.tools import md5
-from socket   import inet_ntoa
+from socket import inet_ntoa
 
 __all__ = ['GFWFuckerHTTPLocal', 'GFWFuckerSOCKSLocal', 'GFWFuckerClient']
 
@@ -25,13 +25,14 @@ class GFWFuckerSOCKSLocal(BaseHandler, BaseForwarder):
         BaseForwarder.__init__(self, self._forward)
     def _forward(self, data):
         pass
-class GFWFuckerClient(BaseHandler):
+class GFWFuckerClient(BaseHandler, BaseLogger):
     """
     local - client - server - remote
                    ^ connect handler
     """
     def __init__(self, addr, port, password):
         BaseHandler.__init__(self, addr, port)
+        BaseLogger.__init__(self)
         self.is_verified = False
         self.send_pack(HANDSHAKE, md5(password))
         self.recv_pack()
